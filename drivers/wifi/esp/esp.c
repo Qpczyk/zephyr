@@ -368,6 +368,8 @@ MODEM_CMD_DEFINE(on_cmd_wifi_disconnected)
 	net_if_ipv4_addr_rm(dev->net_iface, &dev->ip);
 	wifi_mgmt_raise_disconnect_result_event(dev->net_iface, 0);
 
+	k_sem_give(&dev->sem_disconnected);
+
 	return 0;
 }
 
@@ -1061,6 +1063,7 @@ static int esp_init(const struct device *dev)
 	k_sem_init(&data->sem_response, 0, 1);
 	k_sem_init(&data->sem_if_ready, 0, 1);
 	k_sem_init(&data->sem_if_up, 0, 1);
+	k_sem_init(&data->sem_disconnected, 0, 1);
 
 	k_work_init(&data->init_work, esp_init_work);
 	k_delayed_work_init(&data->ip_addr_work, esp_ip_addr_work);
@@ -1117,6 +1120,10 @@ static int esp_init(const struct device *dev)
 		goto error;
 	}
 
+#ifdef CONFIG_PM_DEVICE
+	data->pm_state = DEVICE_PM_ACTIVE_STATE;
+#endif
+
 	/* start RX thread */
 	k_thread_create(&esp_rx_thread, esp_rx_stack,
 			K_KERNEL_STACK_SIZEOF(esp_rx_stack),
@@ -1130,7 +1137,126 @@ error:
 	return ret;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int esp_device_power_up(const struct device *dev)
+{
+	int ret;
+	struct esp_data *data = dev->data;
+
+	ret = device_set_power_state(device_get_binding(DT_INST_BUS_LABEL(0)),
+				     DEVICE_PM_ACTIVE_STATE, NULL, NULL);
+	if (ret < 0) {
+		LOG_ERR("Failed to activate bus");
+		return -EIO;
+	}
+
+#if DT_INST_NODE_HAS_PROP(0, power_gpios)
+	modem_pin_write(&data->mctx, ESP_POWER, 1);
+
+	LOG_INF("Waiting for interface to come up");
+
+	ret = k_sem_take(&data->sem_if_up, ESP_INIT_TIMEOUT);
+	if (ret < 0) {
+		LOG_ERR("Timeout waiting for interface");
+		modem_pin_write(&data->mctx, ESP_POWER, 0);
+#endif
+	}
+
+	return ret;
+}
+
+static int esp_device_power_down(const struct device *dev)
+{
+	int ret;
+	struct esp_data *data = dev->data;
+
+	if (esp_flags_are_set(data, EDF_STA_CONNECTED)) {
+		esp_mgmt_disconnect(dev);
+
+		ret = k_sem_take(&data->sem_disconnected, K_SECONDS(10));
+		if (ret < 0) {
+			LOG_WRN("Disconnect timeout!");
+		} else {
+			/* wait for work switchng device state */
+			k_sleep(K_SECONDS(5));
+		}
+	}
+
+	if (net_if_is_up(data->net_iface)) {
+		net_if_down(data->net_iface);
+	}
+
+#if DT_INST_NODE_HAS_PROP(0, power_gpios)
+	modem_pin_write(&data->mctx, ESP_POWER, 0);
+#endif
+
+	ret = device_set_power_state(device_get_binding(DT_INST_BUS_LABEL(0)),
+				     DEVICE_PM_OFF_STATE, NULL, NULL);
+	if (ret < 0) {
+		LOG_ERR("Failed to power off bus device");
+	}
+
+	return ret;
+}
+
+static int set_power_sate(const struct device *dev, uint32_t new_state)
+{
+	int ret;
+	struct esp_data *data = dev->data;
+
+	if (new_state == data->pm_state) {
+		LOG_WRN("Power state already set!");
+		return 0;
+	}
+
+	switch (new_state) {
+	case DEVICE_PM_ACTIVE_STATE:
+		ret = esp_device_power_up(dev);
+		break;
+	case DEVICE_PM_LOW_POWER_STATE:
+	case DEVICE_PM_SUSPEND_STATE:
+	case DEVICE_PM_OFF_STATE:
+		ret = esp_device_power_down(dev);
+		break;
+	default:
+		LOG_WRN("Power state (%d) not supported!", new_state);
+		ret = -ENOTSUP;
+	}
+
+	return ret;
+}
+
+int device_pm_control(const struct device *dev, uint32_t ctrl_command,
+		      void *context, device_pm_cb cb, void *arg)
+{
+	int ret = 0;
+	struct esp_data *data = dev->data;
+	uint32_t *power_state = (uint32_t *)context;
+
+	if (ctrl_command == DEVICE_PM_SET_POWER_STATE) {
+		ret = set_power_sate(dev, *power_state);
+		if (!ret) {
+			data->pm_state = *power_state;
+		}
+	} else if (ctrl_command == DEVICE_PM_GET_POWER_STATE) {
+		*power_state = data->pm_state;
+	} else {
+		ret = -ENOTSUP;
+	}
+
+	if (cb) {
+		cb(dev, ret, context, arg);
+	}
+
+	return ret;
+}
+
+#define ESP_PM_CONTROL_FN		device_pm_control
+#else
+#define ESP_PM_CONTROL_FN		device_pm_control_nop
+#endif /* CONFIG_PM_DEVICE */
+
 NET_DEVICE_OFFLOAD_INIT(wifi_esp, CONFIG_WIFI_ESP_NAME,
-			esp_init, device_pm_control_nop, &esp_driver_data, NULL,
+			esp_init, ESP_PM_CONTROL_FN, &esp_driver_data, NULL,
 			CONFIG_WIFI_INIT_PRIORITY, &esp_api,
 			ESP_MTU);
