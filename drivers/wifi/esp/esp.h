@@ -231,6 +231,10 @@ struct esp_data {
 	struct k_sem sem_response;
 	struct k_sem sem_if_ready;
 	struct k_sem sem_if_up;
+
+#ifdef CONFIG_PM_DEVICE
+	uint32_t pm_state;
+#endif
 };
 
 int esp_offload_init(struct net_if *iface);

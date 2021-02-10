@@ -1117,6 +1117,10 @@ static int esp_init(const struct device *dev)
 		goto error;
 	}
 
+#ifdef CONFIG_DEVICE_POWER_MANAGEMENT
+	data->pm_state = DEVICE_PM_ACTIVE_STATE;
+#endif
+
 	/* start RX thread */
 	k_thread_create(&esp_rx_thread, esp_rx_stack,
 			K_KERNEL_STACK_SIZEOF(esp_rx_stack),
@@ -1130,7 +1134,91 @@ error:
 	return ret;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int set_power_sate(const struct device *dev,
+			uint32_t new_state)
+{
+	int ret = 0;
+	struct esp_data *data = dev->data;
+
+	if (new_state != data->pm_state) {
+		switch (new_state) {
+#if DT_INST_NODE_HAS_PROP(0, wifi_power_gpios)
+		case DEVICE_PM_ACTIVE_STATE:
+			/* enable uart */
+			ret = device_set_power_state(
+						device_get_binding(DT_INST_BUS_LABEL(0),
+						DEVICE_PM_ACTIVE_STATE, NULL, NULL);
+			if (ret < 0) {
+				LOG_ERR("Failed to activate bus");
+				return -EIO;
+			}
+
+			modem_pin_write(&dev->mctx, ESP_POWER, 1);
+
+			LOG_INF("Waiting for interface to come up");
+
+			ret = k_sem_take(&dev->sem_if_up, ESP_INIT_TIMEOUT);
+			if (ret < 0) {
+				LOG_ERR("Timeout waiting for interface");
+				modem_pin_write(&dev->mctx, ESP_POWER, 0);
+			}
+
+			break;
+		case DEVICE_PM_LOW_POWER_STATE:
+		case DEVICE_PM_SUSPEND_STATE:
+		case DEVICE_PM_OFF_STATE:
+			if (net_if_is_up(data->net_iface)) {
+				net_if_down(data->net_iface);
+			}
+
+			modem_pin_write(&dev->mctx, ESP_POWER, 0);
+
+			ret = device_set_power_state(
+					device_get_binding(DT_INST_BUS_LABEL(0),
+					DEVICE_PM_OFF_STATE, NULL, NULL);
+			if (ret < 0) {
+				LOG_ERR("Failed to power off bus device");
+			}
+
+			break;
+#endif
+		default:
+			ret = -ENOTSUP;
+		}
+
+		if (!ret) {
+			data->pm_state = new_state;
+		}
+	}
+
+	return ret;
+}
+
+int device_pm_control(const struct device *dev, uint32_t ctrl_command,
+				void *context, device_pm_cb cb, void *arg)
+{
+	int ret = 0;
+	struct esp_data *data = dev->data;
+
+	if (ctrl_command == DEVICE_PM_SET_POWER_STATE) {
+		ret = set_power_sate(dev, *((const uint32_t *)context));
+	} else if (ctrl_command == DEVICE_PM_GET_POWER_STATE) {
+		*((uint32_t *)context) = data->pm_state;
+	} else {
+		ret = -ENOTSUP;
+	}
+
+	if (cb) {
+		cb(dev, ret, context, arg);
+	}
+
+	return ret;
+}
+
+#endif /* fdef CONFIG_DEVICE_POWER_MANAGEMENT */
+
 NET_DEVICE_OFFLOAD_INIT(wifi_esp, CONFIG_WIFI_ESP_NAME,
-			esp_init, device_pm_control_nop, &esp_driver_data, NULL,
+			esp_init, device_pm_control, &esp_driver_data, NULL,
 			CONFIG_WIFI_INIT_PRIORITY, &esp_api,
 			ESP_MTU);
