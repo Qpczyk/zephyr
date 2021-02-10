@@ -68,77 +68,77 @@ extern "C" {
 #endif
 
 #if DT_INST_NODE_HAS_PROP(0, target_speed)
-#define _UART_BAUD	DT_INST_PROP(0, target_speed)
+#define _UART_BAUD      DT_INST_PROP(0, target_speed)
 #else
-#define _UART_BAUD	DT_PROP(ESP_BUS, current_speed)
+#define _UART_BAUD      DT_PROP(ESP_BUS, current_speed)
 #endif
 
 #define _UART_CUR \
-	STRINGIFY(_UART_BAUD)",8,1,0,"_FLOW_CONTROL
+	STRINGIFY(_UART_BAUD) ",8,1,0,"_FLOW_CONTROL
 
-#define CONN_CMD_MAX_LEN (sizeof("AT+"_CWJAP"=\"\",\"\"") + \
+#define CONN_CMD_MAX_LEN (sizeof("AT+"_CWJAP "=\"\",\"\"") + \
 			  WIFI_SSID_MAX_LEN + WIFI_PSK_MAX_LEN)
 
 #if defined(CONFIG_WIFI_ESP_DNS_USE)
-#define ESP_MAX_DNS	MIN(3, CONFIG_DNS_RESOLVER_MAX_SERVERS)
+#define ESP_MAX_DNS     MIN(3, CONFIG_DNS_RESOLVER_MAX_SERVERS)
 #else
-#define ESP_MAX_DNS	0
+#define ESP_MAX_DNS     0
 #endif
 
 #define ESP_MAX_SOCKETS 5
 
 /* Maximum amount that can be sent with CIPSEND and read with CIPRECVDATA */
-#define ESP_MTU		2048
-#define CIPRECVDATA_MAX_LEN	ESP_MTU
+#define ESP_MTU         2048
+#define CIPRECVDATA_MAX_LEN     ESP_MTU
 
-#define INVALID_LINK_ID		255
+#define INVALID_LINK_ID         255
 
-#define MDM_RING_BUF_SIZE	CONFIG_WIFI_ESP_MDM_RING_BUF_SIZE
-#define MDM_RECV_MAX_BUF	CONFIG_WIFI_ESP_MDM_RX_BUF_COUNT
-#define MDM_RECV_BUF_SIZE	CONFIG_WIFI_ESP_MDM_RX_BUF_SIZE
+#define MDM_RING_BUF_SIZE       CONFIG_WIFI_ESP_MDM_RING_BUF_SIZE
+#define MDM_RECV_MAX_BUF        CONFIG_WIFI_ESP_MDM_RX_BUF_COUNT
+#define MDM_RECV_BUF_SIZE       CONFIG_WIFI_ESP_MDM_RX_BUF_SIZE
 
-#define ESP_CMD_TIMEOUT		K_SECONDS(10)
-#define ESP_SCAN_TIMEOUT	K_SECONDS(10)
-#define ESP_CONNECT_TIMEOUT	K_SECONDS(20)
-#define ESP_INIT_TIMEOUT	K_SECONDS(10)
+#define ESP_CMD_TIMEOUT         K_SECONDS(10)
+#define ESP_SCAN_TIMEOUT        K_SECONDS(10)
+#define ESP_CONNECT_TIMEOUT     K_SECONDS(20)
+#define ESP_INIT_TIMEOUT        K_SECONDS(10)
 
-#define ESP_MODE_NONE		0
-#define ESP_MODE_STA		1
-#define ESP_MODE_AP		2
-#define ESP_MODE_STA_AP		3
+#define ESP_MODE_NONE           0
+#define ESP_MODE_STA            1
+#define ESP_MODE_AP             2
+#define ESP_MODE_STA_AP         3
 
 #define ESP_CMD_CWMODE(mode) \
-	"AT+"_CWMODE"="STRINGIFY(_CONCAT(ESP_MODE_, mode))
+	"AT+"_CWMODE "="STRINGIFY (_CONCAT(ESP_MODE_, mode))
 
-#define ESP_CWDHCP_MODE_STATION		"1"
+#define ESP_CWDHCP_MODE_STATION         "1"
 #if defined(CONFIG_WIFI_ESP_AT_VERSION_1_7)
-#define ESP_CWDHCP_MODE_SOFTAP		"0"
+#define ESP_CWDHCP_MODE_SOFTAP          "0"
 #else
-#define ESP_CWDHCP_MODE_SOFTAP		"2"
+#define ESP_CWDHCP_MODE_SOFTAP          "2"
 #endif
 
 #if defined(CONFIG_WIFI_ESP_AT_VERSION_1_7)
 #define _ESP_CMD_DHCP_ENABLE(mode, enable) \
-			  "AT+CWDHCP_CUR=" mode "," STRINGIFY(enable)
+	"AT+CWDHCP_CUR=" mode "," STRINGIFY(enable)
 #else
 #define _ESP_CMD_DHCP_ENABLE(mode, enable) \
-			  "AT+CWDHCP=" STRINGIFY(enable) "," mode
+	"AT+CWDHCP=" STRINGIFY(enable) "," mode
 #endif
 
 #define ESP_CMD_DHCP_ENABLE(mode, enable) \
 	_ESP_CMD_DHCP_ENABLE(_CONCAT(ESP_CWDHCP_MODE_, mode), enable)
 
-#define ESP_CMD_SET_IP(ip, gateway, mask) "AT+"_CIPSTA"=\"" \
-			  ip "\",\""  gateway  "\",\""  mask "\""
+#define ESP_CMD_SET_IP(ip, gateway, mask) "AT+"_CIPSTA "=\"" \
+	ip "\",\""  gateway  "\",\""  mask "\""
 
 extern struct esp_data esp_driver_data;
 
 enum esp_socket_flags {
-	ESP_SOCK_IN_USE     = BIT(1),
-	ESP_SOCK_CONNECTING = BIT(2),
-	ESP_SOCK_CONNECTED  = BIT(3),
-	ESP_SOCK_CLOSE_PENDING = BIT(4),
-	ESP_SOCK_WORKQ_STOPPED = BIT(5),
+	ESP_SOCK_IN_USE         = BIT(1),
+	ESP_SOCK_CONNECTING     = BIT(2),
+	ESP_SOCK_CONNECTED      = BIT(3),
+	ESP_SOCK_CLOSE_PENDING  = BIT(4),
+	ESP_SOCK_WORKQ_STOPPED  = BIT(5),
 };
 
 struct esp_socket {
@@ -178,10 +178,10 @@ struct esp_socket {
 };
 
 enum esp_data_flag {
-	EDF_STA_CONNECTING = BIT(1),
-	EDF_STA_CONNECTED  = BIT(2),
-	EDF_STA_LOCK       = BIT(3),
-	EDF_AP_ENABLED     = BIT(4),
+	EDF_STA_CONNECTING      = BIT(1),
+	EDF_STA_CONNECTED       = BIT(2),
+	EDF_STA_LOCK            = BIT(3),
+	EDF_AP_ENABLED          = BIT(4),
 };
 
 /* driver data */
@@ -231,6 +231,11 @@ struct esp_data {
 	struct k_sem sem_response;
 	struct k_sem sem_if_ready;
 	struct k_sem sem_if_up;
+	struct k_sem sem_disconnected;
+
+#ifdef CONFIG_PM_DEVICE
+	uint32_t pm_state;
+#endif
 };
 
 int esp_offload_init(struct net_if *iface);
@@ -322,7 +327,7 @@ static inline void __esp_socket_work_submit(struct esp_socket *sock,
 }
 
 static inline int esp_socket_work_submit(struct esp_socket *sock,
-					  struct k_work *work)
+					 struct k_work *work)
 {
 	int ret = -EBUSY;
 
