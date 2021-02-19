@@ -20,6 +20,7 @@ LOG_MODULE_REGISTER(wifi_esp, CONFIG_WIFI_LOG_LEVEL);
 
 #include <drivers/gpio.h>
 #include <drivers/uart.h>
+#include <drivers/wifi/esp_if.h>
 
 #include <net/dns_resolve.h>
 #include <net/net_if.h>
@@ -424,11 +425,14 @@ static void esp_ip_addr_work(struct k_work *work)
 	/* update interface addresses */
 	net_if_ipv4_set_gw(dev->net_iface, &dev->gw);
 	net_if_ipv4_set_netmask(dev->net_iface, &dev->nm);
-#if defined(CONFIG_WIFI_ESP_IP_STATIC)
-	net_if_ipv4_addr_add(dev->net_iface, &dev->ip, NET_ADDR_MANUAL, 0);
-#else
-	net_if_ipv4_addr_add(dev->net_iface, &dev->ip, NET_ADDR_DHCP, 0);
-#endif
+
+	if (atomic_test_bit(&dev->config_flags, ESP_CONFIG_IP_STATIC)) {
+		net_if_ipv4_addr_add(dev->net_iface, &dev->ip,
+						     NET_ADDR_MANUAL, 0);
+	} else {
+		net_if_ipv4_addr_add(dev->net_iface, &dev->ip,
+							 NET_ADDR_DHCP, 0);
+	}
 
 	if (IS_ENABLED(CONFIG_WIFI_ESP_DNS_USE)) {
 		ret = esp_cmd_send(dev, dns_cmds, ARRAY_SIZE(dns_cmds),
@@ -751,6 +755,26 @@ MODEM_CMD_DEFINE(on_cmd_fail)
 	return 0;
 }
 
+static int esp_config_static_ip(struct esp_data *dev)
+{
+	char cmd[64];
+
+	char ip[NET_IPV4_ADDR_LEN];
+	char gw[NET_IPV4_ADDR_LEN];
+	char nm[NET_IPV4_ADDR_LEN];
+
+	net_addr_ntop(AF_INET, &dev->static_ip, ip, sizeof(ip));
+	net_addr_ntop(AF_INET, &dev->static_gw, gw, sizeof(gw));
+	net_addr_ntop(AF_INET, &dev->static_nm, nm, sizeof(nm));
+
+	snprintk(cmd, sizeof(cmd),
+		 "AT+%s=\"%s\",\"%s\",\"%s\"", _CIPSTA, ip, gw, nm);
+
+	return modem_cmd_send(&dev->mctx.iface, &dev->mctx.cmd_handler,
+			      response_cmds, ARRAY_SIZE(response_cmds),
+			      cmd, &dev->sem_response, ESP_CMD_TIMEOUT);
+}
+
 static void esp_mgmt_connect_work(struct k_work *work)
 {
 	struct esp_data *dev;
@@ -766,10 +790,23 @@ static void esp_mgmt_connect_work(struct k_work *work)
 		goto out;
 	}
 
-	ret = esp_cmd_send(dev, cmds, ARRAY_SIZE(cmds), dev->conn_cmd,
-			   ESP_CONNECT_TIMEOUT);
+	if (atomic_test_bit(&dev->config_flags,
+			    ESP_CONFIG_IP_STATIC)) {
+		ret = esp_config_static_ip(dev);
+	} else {
+		ret = modem_cmd_send(&dev->mctx.iface, &dev->mctx.cmd_handler,
+				     response_cmds, ARRAY_SIZE(response_cmds),
+				     "AT+CWDHCP=1,1", &dev->sem_response,
+				     ESP_CMD_TIMEOUT);
+	}
 
-	memset(dev->conn_cmd, 0, sizeof(dev->conn_cmd));
+	if (ret == 0) {
+		ret = esp_cmd_send(dev, cmds, ARRAY_SIZE(cmds),
+				   dev->conn_cmd,
+				   ESP_CONNECT_TIMEOUT);
+
+		memset(dev->conn_cmd, 0, sizeof(dev->conn_cmd));
+	}
 
 	if (ret < 0) {
 		if (esp_flags_are_set(dev, EDF_STA_CONNECTED)) {
@@ -1053,6 +1090,29 @@ static const struct net_wifi_mgmt_offload esp_api = {
 	.ap_enable	= esp_mgmt_ap_enable,
 	.ap_disable	= esp_mgmt_ap_disable,
 };
+
+void esp_if_use_static_addr(const struct device *dev, bool use_static)
+{
+	struct esp_data *data = dev->data;
+
+	if (use_static) {
+		atomic_set_bit(&data->config_flags,
+			       ESP_CONFIG_IP_STATIC);
+	} else {
+		atomic_clear_bit(&data->config_flags,
+				 ESP_CONFIG_IP_STATIC);
+	}
+}
+
+void esp_if_set_static_addr(const struct device *dev, struct in_addr *ip,
+			 struct in_addr *gw, struct in_addr *nm)
+{
+	struct esp_data *data = dev->data;
+
+	data->static_ip = *ip;
+	data->static_gw = *gw;
+	data->static_nm = *nm;
+}
 
 static int esp_init(const struct device *dev)
 {

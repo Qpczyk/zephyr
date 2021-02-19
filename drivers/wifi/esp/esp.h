@@ -184,6 +184,10 @@ enum esp_data_flag {
 	EDF_AP_ENABLED          = BIT(4),
 };
 
+enum esp_config_flag {
+	ESP_CONFIG_IP_STATIC	= BIT(1),
+};
+
 /* driver data */
 struct esp_data {
 	struct net_if *net_iface;
@@ -192,6 +196,13 @@ struct esp_data {
 	uint8_t mode;
 
 	char conn_cmd[CONN_CMD_MAX_LEN];
+
+	/* host configuration */
+	atomic_t config_flags;
+
+	struct in_addr static_ip;
+	struct in_addr static_gw;
+	struct in_addr static_nm;
 
 	/* addresses  */
 	struct in_addr ip;
