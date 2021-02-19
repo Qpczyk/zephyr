@@ -20,6 +20,7 @@ LOG_MODULE_REGISTER(wifi_esp, CONFIG_WIFI_LOG_LEVEL);
 
 #include <drivers/gpio.h>
 #include <drivers/uart.h>
+#include <drivers/wifi/esp_wifi.h>
 
 #include <net/dns_resolve.h>
 #include <net/net_if.h>
@@ -404,6 +405,7 @@ static void esp_ip_addr_work(struct k_work *work)
 	struct esp_data *dev = CONTAINER_OF(work, struct esp_data,
 					    ip_addr_work);
 	int ret;
+	enum net_addr_type addr_type = NET_ADDR_DHCP;
 
 	static const struct modem_cmd cmds[] = {
 		MODEM_CMD("+"_CIPSTA":", on_cmd_cipsta, 2U, ":"),
@@ -424,10 +426,15 @@ static void esp_ip_addr_work(struct k_work *work)
 	/* update interface addresses */
 	net_if_ipv4_set_gw(dev->net_iface, &dev->gw);
 	net_if_ipv4_set_netmask(dev->net_iface, &dev->nm);
+
 #if defined(CONFIG_WIFI_ESP_IP_STATIC)
 	net_if_ipv4_addr_add(dev->net_iface, &dev->ip, NET_ADDR_MANUAL, 0);
 #else
-	net_if_ipv4_addr_add(dev->net_iface, &dev->ip, NET_ADDR_DHCP, 0);
+	if (atomic_test_bit(&dev->config_flags, ESP_CONFIG_STA_IP_STATIC)) {
+		addr_type = NET_ADDR_MANUAL;
+	}
+
+	net_if_ipv4_addr_add(dev->net_iface, &dev->ip, addr_type, 0);
 #endif
 
 	if (IS_ENABLED(CONFIG_WIFI_ESP_DNS_USE)) {
@@ -948,6 +955,14 @@ static void esp_init_work(struct k_work *work)
 		return;
 	}
 
+#if !defined(CONFIG_WIFI_ESP_IP_STATIC)
+	if (atomic_test_bit(&dev->config_flags, ESP_CONFIG_STA_IP_STATIC)) {
+		k_work_submit_to_queue(&dev->workq, &dev->sta_ip_static_work);
+	} else {
+		k_work_submit_to_queue(&dev->workq, &dev->dhcp_work);
+	}
+#endif
+
 #if DT_INST_NODE_HAS_PROP(0, target_speed)
 	static const struct uart_config uart_config = {
 		.baudrate = DT_INST_PROP(0, target_speed),
@@ -1054,6 +1069,84 @@ static const struct net_wifi_mgmt_offload esp_api = {
 	.ap_disable	= esp_mgmt_ap_disable,
 };
 
+void esp_wifi_dhcp_enable(const struct device *dev)
+{
+	struct esp_data *data = dev->data;
+
+	atomic_clear_bit(&data->config_flags, ESP_CONFIG_STA_IP_STATIC);
+
+	k_work_submit_to_queue(&data->workq, &data->dhcp_work);
+}
+
+int esp_wifi_set_static_addr(const struct device *dev,
+			     enum esp_iface_type type, struct in_addr *ip,
+			     struct in_addr *gw, struct in_addr *nm)
+{
+	struct esp_data *data = dev->data;
+
+	if (type == ESP_IFACE_WIFI) {
+		data->sta_ip_static = *ip;
+		data->sta_gw_static = *gw;
+		data->sta_nm_static = *nm;
+
+		atomic_set_bit(&data->config_flags, ESP_CONFIG_STA_IP_STATIC);
+
+		k_work_submit_to_queue(&data->workq,
+				       &data->sta_ip_static_work);
+	} else {
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+
+static int esp_config_ip_mode(struct esp_data *dev, enum esp_iface_type type)
+{
+	char cmd[64];
+	char ip[NET_IPV4_ADDR_LEN];
+	char gw[NET_IPV4_ADDR_LEN];
+	char nm[NET_IPV4_ADDR_LEN];
+
+	if (type == ESP_IFACE_WIFI) {
+		net_addr_ntop(AF_INET, &dev->sta_ip_static, ip, sizeof(ip));
+		net_addr_ntop(AF_INET, &dev->sta_gw_static, gw, sizeof(gw));
+		net_addr_ntop(AF_INET, &dev->sta_nm_static, nm, sizeof(nm));
+	} else {
+		return -ENOTSUP;
+	}
+
+	snprintk(cmd, sizeof(cmd), "AT+%s=\"%s\",\"%s\",\"%s\"", _CIPSTA, ip,
+		 gw, nm);
+
+	return modem_cmd_send(&dev->mctx.iface, &dev->mctx.cmd_handler,
+				response_cmds, ARRAY_SIZE(response_cmds),
+				cmd, &dev->sem_response, ESP_CMD_TIMEOUT);
+}
+
+static void esp_dhcp_work(struct k_work *work)
+{
+	struct esp_data *dev = CONTAINER_OF(work, struct esp_data, dhcp_work);
+	int ret = modem_cmd_send(&dev->mctx.iface, &dev->mctx.cmd_handler,
+				 response_cmds, ARRAY_SIZE(response_cmds),
+				 "AT+CWDHCP=1,1", &dev->sem_response,
+				 ESP_CMD_TIMEOUT);
+
+	if (ret < 0) {
+		LOG_WRN("Failed to enable DHCP mode");
+	}
+}
+
+static void esp_sta_ip_static_work(struct k_work *work)
+{
+	struct esp_data *dev = CONTAINER_OF(work, struct esp_data,
+					    sta_ip_static_work);
+	int ret = esp_config_ip_mode(dev, ESP_IFACE_WIFI);
+
+	if (ret < 0) {
+		LOG_ERR("Failed to set static ip address!");
+	}
+}
+
 static int esp_init(const struct device *dev)
 {
 	struct esp_data *data = dev->data;
@@ -1070,6 +1163,8 @@ static int esp_init(const struct device *dev)
 	k_work_init(&data->scan_work, esp_mgmt_scan_work);
 	k_work_init(&data->connect_work, esp_mgmt_connect_work);
 	k_work_init(&data->mode_switch_work, esp_mode_switch_work);
+	k_work_init(&data->sta_ip_static_work, esp_sta_ip_static_work);
+	k_work_init(&data->dhcp_work, esp_dhcp_work);
 	if (IS_ENABLED(CONFIG_WIFI_ESP_DNS_USE)) {
 		k_work_init(&data->dns_work, esp_dns_work);
 	}
