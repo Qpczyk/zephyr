@@ -40,6 +40,10 @@ extern "C" {
 #define _CIPSTAMAC "CIPSTAMAC"
 #define _CIPRECVDATA "+CIPRECVDATA:"
 #define _CIPRECVDATA_END ','
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+#define _CIPETHMAC "CIPETHMAC"
+#define _CIPETH "CIPETH"
+#endif
 #endif
 
 /*
@@ -184,15 +188,21 @@ enum esp_data_flag {
 	EDF_STA_CONNECTED  = BIT(2),
 	EDF_STA_LOCK       = BIT(3),
 	EDF_AP_ENABLED     = BIT(4),
+	EDF_ETH_CONNECTED  = BIT(5),
 };
 
 enum esp_config_flag {
 	ESP_CONFIG_STA_IP_STATIC = BIT(1),
+	ESP_CONFIG_ETH_IP_STATIC = BIT(2),
+	ESP_CONFIG_ETH_SUSPENDED = BIT(3),
 };
 
 /* driver data */
 struct esp_data {
 	struct net_if *net_iface;
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	struct net_if *eth_iface;
+#endif
 
 	uint8_t at_version[ESP_AT_VERSION_LEN];
 
@@ -204,11 +214,23 @@ struct esp_data {
 	/* host configuration */
 	atomic_t config_flags;
 
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+	struct in_addr eth_ip_static;
+	struct in_addr eth_gw_static;
+	struct in_addr eth_nm_static;
+
+	/* ethernet adresses */
+	struct in_addr eth_ip;
+	struct in_addr eth_gw;
+	struct in_addr eth_nm;
+	uint8_t eth_mac_addr[6];
+#endif
+
 	struct in_addr sta_ip_static;
 	struct in_addr sta_gw_static;
 	struct in_addr sta_nm_static;
 
-	/* addresses  */
+	/* wifi addresses  */
 	struct in_addr ip;
 	struct in_addr gw;
 	struct in_addr nm;
@@ -240,6 +262,10 @@ struct esp_data {
 	struct k_work dns_work;
 	struct k_work dhcp_work;
 	struct k_work sta_ip_static_work;
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+	struct k_delayed_work eth_ip_addr_work;
+	struct k_work eth_ip_static_work;
+#endif
 
 	scan_result_cb_t scan_cb;
 

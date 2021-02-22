@@ -17,6 +17,9 @@ extern "C" {
 
 enum esp_iface_type {
 	ESP_IFACE_WIFI,
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+	ESP_IFACE_ETH,
+#endif
 };
 
 void esp_wifi_dhcp_enable(const struct device *dev);
@@ -25,6 +28,11 @@ int esp_wifi_set_static_addr(const struct device *dev,
 			     struct in_addr *gw, struct in_addr *nm);
 int esp_wifi_get_at_version(const struct device *dev, uint8_t *dst,
 			    uint8_t dst_size);
+
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+void esp_wifi_suspend_eth(const struct device *dev, bool suspend);
+bool esp_wifi_is_eth_suspended(const struct device *dev);
+#endif
 
 #ifdef __cplusplus
 }
