@@ -27,6 +27,7 @@ LOG_MODULE_REGISTER(wifi_esp, CONFIG_WIFI_LOG_LEVEL);
 #include <net/net_ip.h>
 #include <net/net_offload.h>
 #include <net/wifi_mgmt.h>
+#include <net/ethernet.h>
 
 #include "esp.h"
 
@@ -37,6 +38,9 @@ enum modem_control_pins {
 #endif
 #if DT_INST_NODE_HAS_PROP(0, reset_gpios)
 	ESP_RESET,
+#endif
+#if DT_INST_NODE_HAS_PROP(0, eth_if_reset_gpios)
+	ESP_ETH_IF_RESET,
 #endif
 	NUM_PINS,
 };
@@ -51,6 +55,11 @@ static struct modem_pin modem_pins[] = {
 	MODEM_PIN(DT_INST_GPIO_LABEL(0, reset_gpios),
 		  DT_INST_GPIO_PIN(0, reset_gpios),
 		  DT_INST_GPIO_FLAGS(0, reset_gpios) | GPIO_OUTPUT_INACTIVE),
+#endif
+#if DT_INST_NODE_HAS_PROP(0, eth_if_reset_gpios)
+	MODEM_PIN(DT_INST_GPIO_LABEL(0, eth_if_reset_gpios),
+		  DT_INST_GPIO_PIN(0, eth_if_reset_gpios),
+		  DT_INST_GPIO_FLAGS(0, eth_if_reset_gpios) | GPIO_OUTPUT_INACTIVE),
 #endif
 };
 
@@ -674,15 +683,113 @@ MODEM_CMD_DEFINE(on_cmd_ready)
 	dev->mode = 0;
 
 	net_if_ipv4_addr_rm(dev->net_iface, &dev->ip);
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	net_if_ipv4_addr_rm(dev->eth_iface, &dev->eth_ip);
+#endif
 	k_work_submit_to_queue(&dev->workq, &dev->init_work);
 
 	return 0;
 }
 
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+MODEM_CMD_DEFINE(on_cmd_cipeth)
+{
+	struct esp_data *dev = CONTAINER_OF(data, struct esp_data,
+					    cmd_handler_data);
+	char *ip;
+
+	ip = str_unquote(argv[1]);
+
+	if (!strcmp(argv[0], "ip")) {
+		net_addr_pton(AF_INET, ip, &dev->eth_ip);
+	} else if (!strcmp(argv[0], "gateway")) {
+		net_addr_pton(AF_INET, ip, &dev->eth_gw);
+	} else if (!strcmp(argv[0], "netmask")) {
+		net_addr_pton(AF_INET, ip, &dev->eth_nm);
+	} else {
+		LOG_WRN("Unknown IP type %s", log_strdup(argv[0]));
+	}
+
+	return 0;
+}
+
+MODEM_CMD_DEFINE(on_cmd_cipethmac)
+{
+	struct esp_data *dev = CONTAINER_OF(data, struct esp_data,
+					    cmd_handler_data);
+	char *mac;
+
+	mac = str_unquote(argv[0]);
+
+	net_bytes_from_str(dev->eth_mac_addr, sizeof(dev->eth_mac_addr),
+					   mac);
+
+	return 0;
+}
+
+MODEM_CMD_DEFINE(on_cmd_eth_connect)
+{
+	struct esp_data *dev = CONTAINER_OF(data, struct esp_data,
+					cmd_handler_data);
+
+	LOG_INF("Ethernet connected!");
+
+	if (esp_flags_are_set(dev, EDF_ETH_CONNECTED)) {
+		return 0;
+	}
+
+	if (atomic_test_bit(&dev->config_flags,
+			ESP_CONFIG_IP_STATIC)) {
+		k_work_submit(&dev->eth_set_addr_work);
+	}
+
+	esp_mode_flags_set(dev, EDF_ETH_CONNECTED);
+
+	net_if_up(dev->eth_iface);
+
+	return 0;
+}
+
+MODEM_CMD_DEFINE(on_cmd_eth_disconnect)
+{
+	struct esp_data *dev = CONTAINER_OF(data, struct esp_data,
+					cmd_handler_data);
+
+	LOG_INF("Ethernet disconnected!");
+
+	if (esp_flags_are_set(dev, EDF_ETH_CONNECTED)) {
+		esp_mode_flags_clear(dev, EDF_ETH_CONNECTED);
+	}
+
+	net_if_ipv4_addr_rm(dev->eth_iface, &dev->eth_ip);
+
+	net_if_down(dev->eth_iface);
+
+	return 0;
+}
+
+MODEM_CMD_DEFINE(on_cmd_eth_got_ip)
+{
+	LOG_INF("Ethernet IP set");
+
+	struct esp_data *dev = CONTAINER_OF(data, struct esp_data,
+					cmd_handler_data);
+
+	k_work_submit_to_queue(&dev->workq, &dev->eth_ip_addr_work);
+
+	return 0;
+}
+#endif
+
 static const struct modem_cmd unsol_cmds[] = {
 	MODEM_CMD("WIFI CONNECTED", on_cmd_wifi_connected, 0U, ""),
 	MODEM_CMD("WIFI DISCONNECT", on_cmd_wifi_disconnected, 0U, ""),
 	MODEM_CMD("WIFI GOT IP", on_cmd_got_ip, 0U, ""),
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	MODEM_CMD("+ETH_CONNECTED", on_cmd_eth_connect, 0U, ""),
+	MODEM_CMD("+ETH_DISCONNECTED", on_cmd_eth_disconnect, 0U, ""),
+	MODEM_CMD("+ETH_GOT_IP", on_cmd_eth_got_ip, 0U, ""),
+#endif
 	MODEM_CMD("0,CONNECT", on_cmd_connect, 0U, ""),
 	MODEM_CMD("1,CONNECT", on_cmd_connect, 0U, ""),
 	MODEM_CMD("2,CONNECT", on_cmd_connect, 0U, ""),
@@ -755,20 +862,38 @@ MODEM_CMD_DEFINE(on_cmd_fail)
 	return 0;
 }
 
-static int esp_config_static_ip(struct esp_data *dev)
+static int esp_config_static_ip(struct esp_data *dev,
+				enum esp_iface_type iface_type)
 {
 	char cmd[64];
+	char *at_cmd = _CIPSTA;
 
 	char ip[NET_IPV4_ADDR_LEN];
 	char gw[NET_IPV4_ADDR_LEN];
 	char nm[NET_IPV4_ADDR_LEN];
 
-	net_addr_ntop(AF_INET, &dev->static_ip, ip, sizeof(ip));
-	net_addr_ntop(AF_INET, &dev->static_gw, gw, sizeof(gw));
-	net_addr_ntop(AF_INET, &dev->static_nm, nm, sizeof(nm));
+
+	if (iface_type == ESP_IFACE_WIFI) {
+		net_addr_ntop(AF_INET, &dev->static_ip, ip,
+		              sizeof(ip));
+		net_addr_ntop(AF_INET, &dev->static_gw, gw,
+		              sizeof(gw));
+		net_addr_ntop(AF_INET, &dev->static_nm, nm,
+		              sizeof(nm));
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	} else {
+		at_cmd = _CIPETH;
+		net_addr_ntop(AF_INET, &dev->eth_static_ip, ip,
+			      sizeof(ip));
+		net_addr_ntop(AF_INET, &dev->eth_static_gw, gw,
+			      sizeof(gw));
+		net_addr_ntop(AF_INET, &dev->eth_static_nm, nm,
+			      sizeof(nm));
+#endif
+	}
 
 	snprintk(cmd, sizeof(cmd),
-		 "AT+%s=\"%s\",\"%s\",\"%s\"", _CIPSTA, ip, gw, nm);
+		 "AT+%s=\"%s\",\"%s\",\"%s\"", at_cmd, ip, gw, nm);
 
 	return modem_cmd_send(&dev->mctx.iface, &dev->mctx.cmd_handler,
 			      response_cmds, ARRAY_SIZE(response_cmds),
@@ -792,7 +917,7 @@ static void esp_mgmt_connect_work(struct k_work *work)
 
 	if (atomic_test_bit(&dev->config_flags,
 			    ESP_CONFIG_IP_STATIC)) {
-		ret = esp_config_static_ip(dev);
+		ret = esp_config_static_ip(dev, ESP_IFACE_WIFI);
 	} else {
 		ret = modem_cmd_send(&dev->mctx.iface, &dev->mctx.cmd_handler,
 				     response_cmds, ARRAY_SIZE(response_cmds),
@@ -971,6 +1096,10 @@ static void esp_init_work(struct k_work *work)
 #endif
 		SETUP_CMD("AT+"_CIPSTAMAC"?", "+"_CIPSTAMAC":",
 			  on_cmd_cipstamac, 1U, ""),
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+		SETUP_CMD("AT+"_CIPETHMAC"?", "+"_CIPETHMAC":",
+			  on_cmd_cipethmac, 1U, ""),
+#endif
 	};
 
 	dev = CONTAINER_OF(work, struct esp_data, init_work);
@@ -1019,7 +1148,10 @@ static void esp_init_work(struct k_work *work)
 
 	net_if_set_link_addr(dev->net_iface, dev->mac_addr,
 			     sizeof(dev->mac_addr), NET_LINK_ETHERNET);
-
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	net_if_set_link_addr(dev->eth_iface, dev->eth_mac_addr,
+			     sizeof(dev->eth_mac_addr), NET_LINK_ETHERNET);
+#endif
 	esp_configure_hostname(dev);
 
 	LOG_INF("ESP Wi-Fi ready");
@@ -1036,6 +1168,12 @@ static void esp_reset(struct esp_data *dev)
 	if (net_if_is_up(dev->net_iface)) {
 		net_if_down(dev->net_iface);
 	}
+
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+	if (net_if_is_up(dev->eth_iface)) {
+		net_if_down(dev->eth_iface);
+	}
+#endif
 
 #if DT_INST_NODE_HAS_PROP(0, power_gpios)
 	modem_pin_write(&dev->mctx, ESP_POWER, 0);
@@ -1091,6 +1229,102 @@ static const struct net_wifi_mgmt_offload esp_api = {
 	.ap_disable	= esp_mgmt_ap_disable,
 };
 
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+static void esp_eth_iface_init(struct net_if *iface)
+{
+	const struct device *dev = net_if_get_device(iface);
+	struct esp_data *data = dev->data;
+
+	net_if_flag_set(iface, NET_IF_NO_AUTO_START);
+
+	data->eth_iface = iface;
+	esp_offload_init(iface);
+}
+
+static void eth_get_ip_addr_work(struct k_work *work)
+{
+	struct esp_data *dev = CONTAINER_OF(work, struct esp_data,
+			eth_ip_addr_work);
+	struct modem_cmd cmds[] = {
+		MODEM_CMD("+CIPETH:", on_cmd_cipeth, 2U, ":"),
+	};
+	static const struct modem_cmd dns_cmds[] = {
+		MODEM_CMD_ARGS_MAX("+CIPDNS:", on_cmd_cipdns, 1U, 3U, ","),
+	};
+	enum net_addr_type addr_type = NET_ADDR_DHCP;
+	int ret;
+
+	modem_cmd_send(&dev->mctx.iface, &dev->mctx.cmd_handler,
+			cmds, ARRAY_SIZE(cmds), "AT+CIPETH?",
+			&dev->sem_response, ESP_CMD_TIMEOUT);
+
+	static const struct modem_cmd sta_cmds[] = {
+		MODEM_CMD("+"_CIPSTA":", on_cmd_cipsta, 2U, ":"),
+	};
+
+	esp_cmd_send(dev, sta_cmds, ARRAY_SIZE(sta_cmds), "AT+"_CIPSTA"?",
+			   ESP_CMD_TIMEOUT);
+
+	/* update interface addresses */
+	net_if_ipv4_set_gw(dev->eth_iface, &dev->eth_gw);
+	net_if_ipv4_set_netmask(dev->eth_iface, &dev->eth_nm);
+
+	if (atomic_test_bit(&dev->config_flags, ESP_CONFIG_IP_STATIC)) {
+		addr_type = NET_ADDR_MANUAL;
+	}
+
+	net_if_ipv4_addr_add(dev->eth_iface, &dev->eth_ip, addr_type,
+			     0);
+
+	if (IS_ENABLED(CONFIG_WIFI_ESP_DNS_USE)) {
+		ret = esp_cmd_send(dev, dns_cmds, ARRAY_SIZE(dns_cmds),
+				   "AT+CIPDNS?", ESP_CMD_TIMEOUT);
+		if (ret) {
+			LOG_WRN("DNS fetch failed: %d", ret);
+		}
+	}
+}
+
+static void eth_set_addr_work(struct k_work *work)
+{
+	int err;
+	struct esp_data *dev = CONTAINER_OF(work, struct esp_data,
+			eth_set_addr_work);
+
+	err = esp_config_static_ip(dev, ESP_IFACE_ETH);
+	if (err < 0) {
+		LOG_ERR("Failed to set static ip");
+	}
+
+	return;
+}
+
+void esp_cfg_suspend_eth(const struct device *dev, bool suspend) {
+#if DT_INST_NODE_HAS_PROP(0, eth_if_reset_gpios)
+	struct esp_data *data = dev->data;
+
+	modem_pin_write(&data->mctx, ESP_ETH_IF_RESET, suspend);
+#endif
+}
+
+static const struct ethernet_api esp_eth_api = {
+	.iface_api.init = esp_eth_iface_init,
+};
+
+static int esp_eth_init(const struct device *dev)
+{
+	LOG_INF("Init called");
+
+	struct esp_data *data = dev->data;
+
+	k_work_init(&data->eth_set_addr_work, eth_set_addr_work);
+	k_work_init(&data->eth_ip_addr_work, eth_get_ip_addr_work);
+
+	return 0;
+}
+
+#endif
+
 void esp_if_use_static_addr(const struct device *dev, bool use_static)
 {
 	struct esp_data *data = dev->data;
@@ -1104,21 +1338,30 @@ void esp_if_use_static_addr(const struct device *dev, bool use_static)
 	}
 }
 
-void esp_if_set_static_addr(const struct device *dev, struct in_addr *ip,
-			 struct in_addr *gw, struct in_addr *nm)
+void esp_if_set_static_addr(const struct device *dev,
+			    enum esp_iface_type type,
+			    struct in_addr *ip, struct in_addr *gw,
+			    struct in_addr *nm)
 {
 	struct esp_data *data = dev->data;
-
-	data->static_ip = *ip;
-	data->static_gw = *gw;
-	data->static_nm = *nm;
+	if (type == ESP_IFACE_WIFI) {
+		data->static_ip = *ip;
+		data->static_gw = *gw;
+		data->static_nm = *nm;
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+	} else {
+		data->eth_static_ip = *ip;
+		data->eth_static_gw = *gw;
+		data->eth_static_nm = *nm;
+#endif
+	}
 }
 
 static int esp_init(const struct device *dev)
 {
 	struct esp_data *data = dev->data;
 	int ret = 0;
-
+	if_
 	k_sem_init(&data->sem_tx_ready, 0, 1);
 	k_sem_init(&data->sem_response, 0, 1);
 	k_sem_init(&data->sem_if_ready, 0, 1);
@@ -1324,3 +1567,17 @@ NET_DEVICE_OFFLOAD_INIT(wifi_esp, CONFIG_WIFI_ESP_NAME,
 			CONFIG_WIFI_INIT_PRIORITY, &esp_api,
 			ESP_MTU);
 #endif /* CONFIG_DEVICE_POWER_MANAGEMENT */
+
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+#ifdef CONFIG_PM_DEVICE
+NET_DEVICE_OFFLOAD_INIT(wifi_esp_eth, CONFIG_WIFI_ESP_ETHERNET_NAME,
+			esp_eth_init, device_pm_control, &esp_driver_data,
+			NULL, CONFIG_WIFI_INIT_PRIORITY + 1, &esp_eth_api,
+			ESP_MTU);
+#else
+NET_DEVICE_OFFLOAD_INIT(wifi_esp_eth, CONFIG_WIFI_ESP_ETHERNET_NAME,
+			esp_eth_init, device_pm_control_nop, &esp_driver_data,
+			NULL, CONFIG_WIFI_INIT_PRIORITY + 1, &esp_eth_api,
+			ESP_MTU);
+#endif
+#endif

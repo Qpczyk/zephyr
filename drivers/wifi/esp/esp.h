@@ -40,6 +40,10 @@ extern "C" {
 #define _CIPSTAMAC "CIPSTAMAC"
 #define _CIPRECVDATA "+CIPRECVDATA:"
 #define _CIPRECVDATA_END ','
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+#define _CIPETHMAC "CIPETHMAC"
+#define _CIPETH	"CIPETH"
+#endif
 #endif
 
 /*
@@ -182,6 +186,7 @@ enum esp_data_flag {
 	EDF_STA_CONNECTED       = BIT(2),
 	EDF_STA_LOCK            = BIT(3),
 	EDF_AP_ENABLED          = BIT(4),
+	EDF_ETH_CONNECTED		= BIT(5),
 };
 
 enum esp_config_flag {
@@ -191,6 +196,9 @@ enum esp_config_flag {
 /* driver data */
 struct esp_data {
 	struct net_if *net_iface;
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	struct net_if *eth_iface;
+#endif
 
 	uint8_t flags;
 	uint8_t mode;
@@ -204,7 +212,19 @@ struct esp_data {
 	struct in_addr static_gw;
 	struct in_addr static_nm;
 
-	/* addresses  */
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+	/* ethernet adresses */
+	struct in_addr eth_static_ip;
+	struct in_addr eth_static_gw;
+	struct in_addr eth_static_nm;
+
+	struct in_addr eth_ip;
+	struct in_addr eth_gw;
+	struct in_addr eth_nm;
+	uint8_t eth_mac_addr[6];
+#endif
+
+	/* wifi addresses  */
 	struct in_addr ip;
 	struct in_addr gw;
 	struct in_addr nm;
@@ -234,6 +254,8 @@ struct esp_data {
 	struct k_work connect_work;
 	struct k_work mode_switch_work;
 	struct k_work dns_work;
+	struct k_work eth_ip_addr_work;
+	struct k_work eth_set_addr_work;
 
 	scan_result_cb_t scan_cb;
 

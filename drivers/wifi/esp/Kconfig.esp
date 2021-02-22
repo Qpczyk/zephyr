@@ -138,4 +138,17 @@ config WIFI_ESP_DNS_USE
 	  Fetch DNS servers from ESP chip with AT+CIPDNS? command and apply that
 	  list to system DNS resolver.
 
+config WIFI_ESP_ETHERNET_NAME
+	string "Etherent driver name"
+	default "esp-eth-modem"
+
+config WIFI_ESP_ETH_SUPPORT
+	bool "Use ethernet interface"
+	default n
+	help
+	  Enable support for ethernet interface. This option is available
+	  only for ESP32. Enabling this option will cause wifi connection
+	  to be shut down after ethernet link has been etected and ip
+	  obtained. ESP32 must have ethernet functionality enabled.
+
 endif # WIFI_ESP

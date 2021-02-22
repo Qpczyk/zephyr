@@ -25,3 +25,7 @@ properties:
       description:
         UART baudrate which will be requested using AT commands and to which
         UART interface will be reconfigured during initialization phase.
+
+    eth-if-reset-gpios:
+      type: phandle-array
+      required: false

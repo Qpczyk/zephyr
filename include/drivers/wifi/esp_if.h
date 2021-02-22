@@ -15,9 +15,22 @@
 extern "C" {
 #endif
 
-void esp_if_use_static_addr(const struct device *dev, bool use_static);
-void esp_if_set_static_addr(const struct device *dev, struct in_addr *ip,
-			 struct in_addr *gw, struct in_addr *nm);
+enum esp_iface_type {
+	ESP_IFACE_WIFI,
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+	ESP_IFACE_ETH,
+#endif
+};
+
+#if defined(CONFIG_WIFI_ESP_ETH_SUPPORT)
+void esp_cfg_suspend_eth(const struct device *dev, bool suspend);
+#endif
+void esp_if_use_static_addr(const struct device *dev,
+			    bool use_static);
+void esp_if_set_static_addr(const struct device *dev,
+			    enum esp_iface_type type,
+			    struct in_addr *ip, struct in_addr *gw,
+			    struct in_addr *nm);
 
 #ifdef __cplusplus
 }

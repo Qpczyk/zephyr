@@ -44,9 +44,16 @@ static int _sock_connect(struct esp_data *dev, struct esp_socket *sock)
 	struct sockaddr dst;
 	int ret;
 
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	if (!esp_flags_are_set(dev, EDF_STA_CONNECTED |
+						   EDF_ETH_CONNECTED)) {
+		return -ENETUNREACH;
+	}
+#else
 	if (!esp_flags_are_set(dev, EDF_STA_CONNECTED)) {
 		return -ENETUNREACH;
 	}
+#endif
 
 	k_mutex_lock(&sock->lock, K_FOREVER);
 	dst = sock->dst;
@@ -205,9 +212,16 @@ static int _sock_send(struct esp_socket *sock, struct net_pkt *pkt)
 	};
 	struct sockaddr dst;
 
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	if (!esp_flags_are_set(dev, EDF_STA_CONNECTED |
+						   EDF_ETH_CONNECTED)) {
+		return -ENETUNREACH;
+	}
+#else
 	if (!esp_flags_are_set(dev, EDF_STA_CONNECTED)) {
 		return -ENETUNREACH;
 	}
+#endif
 
 	pkt_len = net_pkt_get_len(pkt);
 
@@ -328,9 +342,16 @@ static int esp_sendto(struct net_pkt *pkt,
 
 	LOG_DBG("link %d, timeout %d", sock->link_id, timeout);
 
+#if defined (CONFIG_WIFI_ESP_ETH_SUPPORT)
+	if (!esp_flags_are_set(dev, EDF_STA_CONNECTED |
+						   EDF_ETH_CONNECTED)) {
+		return -ENETUNREACH;
+	}
+#else
 	if (!esp_flags_are_set(dev, EDF_STA_CONNECTED)) {
 		return -ENETUNREACH;
 	}
+#endif
 
 	if (esp_socket_type(sock) == SOCK_STREAM) {
 		if (!esp_socket_connected(sock)) {
