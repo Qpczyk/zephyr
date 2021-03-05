@@ -23,6 +23,8 @@ void esp_wifi_dhcp_enable(const struct device *dev);
 int esp_wifi_set_static_addr(const struct device *dev,
 			     enum esp_iface_type type, struct in_addr *ip,
 			     struct in_addr *gw, struct in_addr *nm);
+int esp_wifi_get_at_version(const struct device *dev, uint8_t *dst,
+			    uint8_t dst_size);
 
 #ifdef __cplusplus
 }

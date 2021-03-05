@@ -107,6 +107,8 @@ extern "C" {
 #define ESP_MODE_AP		2
 #define ESP_MODE_STA_AP		3
 
+#define ESP_AT_VERSION_LEN      4
+
 #define ESP_CMD_CWMODE(mode) \
 	"AT+"_CWMODE"="STRINGIFY(_CONCAT(ESP_MODE_, mode))
 
@@ -191,6 +193,8 @@ enum esp_config_flag {
 /* driver data */
 struct esp_data {
 	struct net_if *net_iface;
+
+	uint8_t at_version[ESP_AT_VERSION_LEN];
 
 	uint8_t flags;
 	uint8_t mode;

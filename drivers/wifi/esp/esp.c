@@ -682,6 +682,31 @@ MODEM_CMD_DEFINE(on_cmd_ready)
 	return 0;
 }
 
+MODEM_CMD_DEFINE(on_cmd_gmr)
+{
+	struct esp_data *dev = CONTAINER_OF(data, struct esp_data,
+			cmd_handler_data);
+	char *str;
+	char *delim;
+
+	if (!strcmp(argv[0], "AT version")) {
+		str = argv[1];
+
+		LOG_INF("AT version: %s", log_strdup(argv[1]));
+
+		for (int i = 0; i < sizeof(dev->at_version); i++) {
+			delim = strchr(str, '.');
+			if(delim == NULL) {
+				return -EIO;
+			}
+
+			dev->at_version[i] = strtol(str, &str, 10);
+		}
+	}
+
+	return 0;
+}
+
 static const struct modem_cmd unsol_cmds[] = {
 	MODEM_CMD("WIFI CONNECTED", on_cmd_wifi_connected, 0U, ""),
 	MODEM_CMD("WIFI DISCONNECT", on_cmd_wifi_disconnected, 0U, ""),
@@ -941,6 +966,7 @@ static void esp_init_work(struct k_work *work)
 #endif
 		SETUP_CMD("AT+"_CIPSTAMAC"?", "+"_CIPSTAMAC":",
 			  on_cmd_cipstamac, 1U, ""),
+		SETUP_CMD("AT+GMR", "", on_cmd_gmr, 2U, ":"),
 	};
 
 	dev = CONTAINER_OF(work, struct esp_data, init_work);
@@ -1145,6 +1171,20 @@ static void esp_sta_ip_static_work(struct k_work *work)
 	if (ret < 0) {
 		LOG_ERR("Failed to set static ip address!");
 	}
+}
+
+int esp_wifi_get_at_version(const struct device *dev, uint8_t *dst,
+			    uint8_t dst_size)
+{
+	struct esp_data *data = dev->data;
+
+	if (dst_size < sizeof(data->at_version)) {
+		return -EINVAL;
+	}
+
+	memcpy(dst, data->at_version, sizeof(data->at_version));
+
+	return sizeof(data->at_version);
 }
 
 static int esp_init(const struct device *dev)
